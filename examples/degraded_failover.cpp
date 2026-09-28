@@ -1,0 +1,48 @@
+// Degraded or failover operation: the facility is in failover. Ordinary permits
+// still apply, and a failover-scoped permit names the authority path that is valid
+// in that condition. The decision records the condition it was evaluated under.
+
+#include "support.hpp"
+
+int main() {
+  using namespace example;
+  heading("degraded and failover eligibility");
+  const std::filesystem::path root = scratch("failover");
+  Result<FeedAuthority> authority = open(root, 1735689600);
+  if (!authority.ok()) {
+    line("store error: " + authority.status().to_string());
+    return 1;
+  }
+  const Status adopted = adopt(authority.value(), R"(revisions topology=10 policy=4 control=7 evidence=9
+feed F1 source=utility role=primary domain=D1 protected=yes
+feed F2 source=generator role=secondary domain=D2 protected=yes
+load L1 class=critical protected=yes
+link F1 L1 role=primary domain=D1
+link F2 L1 role=secondary domain=D2
+obs feed F1 condition=faulted at=1735689600 max_age=300s source=S1
+obs feed F2 condition=energized at=1735689600 max_age=300s source=S1
+obs link F1 L1 present=yes at=1735689600 max_age=300s source=S1
+obs link F2 L1 present=yes at=1735689600 max_age=300s source=S1
+obs state condition=failover at=1735689600 max_age=300s source=S1
+rule R1 effect=permit precedence=ordinary_policy feed=F1 load=L1 path=AUTH-PRIMARY
+rule R2 effect=permit precedence=ordinary_policy feed=F2 load=L1 path=AUTH-SECONDARY conditions=degraded,failover,emergency
+)", "example-adopt-1", 1735689600);
+  if (!adopted.ok()) {
+    line("adoption refused: " + adopted.to_string());
+    std::filesystem::remove_all(root);
+    return 1;
+  }
+  EvaluationRequest request;
+  request.load = LoadId::Parse("L1").value();
+  request.now = at(1735689600);
+  const Result<DecisionSet> decision = authority.value().Evaluate(request);
+  if (!decision.ok()) {
+    line("evaluation refused: " + decision.status().to_string());
+    return 1;
+  }
+  std::cout << render_decision(decision.value());
+  line("the primary feed is faulted: its condition prevents serving, not the policy");
+  line("the secondary feed is admissible through the failover path");
+  std::filesystem::remove_all(root);
+  return 0;
+}
